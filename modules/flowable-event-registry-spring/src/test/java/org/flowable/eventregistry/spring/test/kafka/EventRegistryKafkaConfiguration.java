@@ -71,8 +71,8 @@ public class EventRegistryKafkaConfiguration {
         consumerProperties.put(CommonClientConfigs.BOOTSTRAP_SERVERS_CONFIG, kafkaContainer.getBootstrapServers());
         consumerProperties.put(ConsumerConfig.KEY_DESERIALIZER_CLASS_CONFIG, StringDeserializer.class);
         consumerProperties.put(ConsumerConfig.VALUE_DESERIALIZER_CLASS_CONFIG, StringDeserializer.class);
-        consumerProperties.put(ConsumerConfig.SESSION_TIMEOUT_MS_CONFIG, 500);
-        consumerProperties.put(ConsumerConfig.HEARTBEAT_INTERVAL_MS_CONFIG, 400);
+        consumerProperties.put(ConsumerConfig.SESSION_TIMEOUT_MS_CONFIG, 10_000);
+        consumerProperties.put(ConsumerConfig.HEARTBEAT_INTERVAL_MS_CONFIG, 3_000);
 
         return new DefaultKafkaConsumerFactory<>(consumerProperties);
     }
