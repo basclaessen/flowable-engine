@@ -1,10 +1,10 @@
 {
-    "key": "nonBlockingRetryChannel",
+    "key": "uniformRandomBackOff",
     "category": "channel",
     "channelType": "inbound",
     "type": "kafka",
     "topics": [
-        "non-blocking-retry-test"
+        "uniform-random-backoff"
     ],
     "deserializerType": "json",
     "channelEventKeyDetection": {
@@ -17,8 +17,13 @@
         }
     ],
     "retry": {
-        "attempts": "3",
+        "attempts": "4",
         "retryTopicSuffix": "-retry",
-        "dltTopicSuffix": "-dlt"
+        "dltTopicSuffix": "-dlt",
+        "nonBlockingBackOff": {
+            "delay": "100",
+            "maxDelay": "200"
+        }
+
     }
 }

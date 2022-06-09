@@ -1,10 +1,10 @@
 {
-    "key": "nonBlockingRetryChannel",
+    "key": "fixedBackOffMultiTopic",
     "category": "channel",
     "channelType": "inbound",
     "type": "kafka",
     "topics": [
-        "non-blocking-retry-test"
+        "fixed-backoff-multi"
     ],
     "deserializerType": "json",
     "channelEventKeyDetection": {
@@ -18,7 +18,12 @@
     ],
     "retry": {
         "attempts": "3",
-        "retryTopicSuffix": "-retry",
-        "dltTopicSuffix": "-dlt"
+        "retryTopicSuffix": "-retry-topic",
+        "dltTopicSuffix": "-dlt-topic",
+        "fixedDelayTopicStrategy": "MULTIPLE_TOPICS",
+        "nonBlockingBackOff": {
+            "delay": "100"
+        }
+
     }
 }

@@ -1,10 +1,10 @@
 {
-    "key": "nonBlockingRetryChannel",
+    "key": "randomExponentialBackOff",
     "category": "channel",
     "channelType": "inbound",
     "type": "kafka",
     "topics": [
-        "non-blocking-retry-test"
+        "random-exponential-backoff"
     ],
     "deserializerType": "json",
     "channelEventKeyDetection": {
@@ -17,8 +17,15 @@
         }
     ],
     "retry": {
-        "attempts": "3",
+        "attempts": "4",
         "retryTopicSuffix": "-retry",
-        "dltTopicSuffix": "-dlt"
+        "dltTopicSuffix": "-dlt",
+        "nonBlockingBackOff": {
+            "delay": "100",
+            "maxDelay": "1000",
+            "multiplier": "2",
+            "random": "true"
+        }
+
     }
 }

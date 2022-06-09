@@ -21,11 +21,14 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Properties;
+import java.util.function.Consumer;
 import java.util.function.Supplier;
 import java.util.regex.Pattern;
 import java.util.stream.Collectors;
 
+import org.apache.kafka.clients.admin.NewTopic;
 import org.apache.kafka.clients.consumer.ConsumerRecord;
+import org.flowable.common.engine.api.FlowableException;
 import org.flowable.eventregistry.api.ChannelModelProcessor;
 import org.flowable.eventregistry.api.ChannelProcessingPipelineManager;
 import org.flowable.eventregistry.api.EventRegistry;
@@ -55,6 +58,7 @@ import org.springframework.kafka.config.ConcurrentKafkaListenerContainerFactory;
 import org.springframework.kafka.config.KafkaListenerContainerFactory;
 import org.springframework.kafka.config.KafkaListenerEndpoint;
 import org.springframework.kafka.config.KafkaListenerEndpointRegistry;
+import org.springframework.kafka.core.KafkaAdminOperations;
 import org.springframework.kafka.core.KafkaOperations;
 import org.springframework.kafka.listener.AbstractMessageListenerContainer;
 import org.springframework.kafka.listener.CommonErrorHandler;
@@ -109,6 +113,7 @@ public class KafkaChannelDefinitionProcessor implements BeanFactoryAware, Applic
     protected final Logger logger = LoggerFactory.getLogger(getClass());
 
     protected KafkaOperations<Object, Object> kafkaOperations;
+    protected KafkaAdminOperations kafkaAdminOperations;
 
     protected KafkaListenerEndpointRegistry endpointRegistry;
 
@@ -177,25 +182,16 @@ public class KafkaChannelDefinitionProcessor implements BeanFactoryAware, Applic
 
     protected void processAndRegisterEndpoints(KafkaInboundChannelModel channelModel, String tenantId, EventRegistry eventRegistry) {
 
-        ResolvedRetryConfiguration retryConfiguration = resolveRetryConfiguration(channelModel);
-        if (retryConfiguration == null) {
-            // There is no retry configuration
-            // We only need to register the endpoint to listen to the topic
-            KafkaListenerEndpoint endpoint = createKafkaListenerEndpoint(channelModel, tenantId, eventRegistry);
-            registerEndpoint(endpoint, null);
-        } else {
-            // We need to use the retry configuration to configure the retry listeners and the dead letter topic
-            KafkaListenerEndpoint mainEndpoint = createKafkaListenerEndpoint(channelModel, tenantId, eventRegistry);
-            KafkaListenerContainerFactory<?> containerFactory = resolveContainerFactory(mainEndpoint, null);
-            Collection<KafkaChannelDefinitionProcessor.Configuration> configurations = createEndpointConfigurations(channelModel, tenantId, eventRegistry,
-                    mainEndpoint, containerFactory);
+        KafkaListenerEndpoint mainEndpoint = createKafkaListenerEndpoint(channelModel, tenantId, eventRegistry);
+        KafkaListenerContainerFactory<?> containerFactory = resolveContainerFactory(mainEndpoint, null);
+        Collection<KafkaChannelDefinitionProcessor.Configuration> configurations = createEndpointConfigurations(channelModel, tenantId, eventRegistry,
+                mainEndpoint, containerFactory);
 
-            // Register all the configurations that belong to the main endpoint in order to be able to unregister them later
-            retryEndpointsByMainEndpointId.put(mainEndpoint.getId(),
-                    configurations.stream().map(Configuration::getEndpoint).map(KafkaListenerEndpoint::getId).collect(Collectors.toList()));
-            for (Configuration configuration : configurations) {
-                registerEndpoint(configuration.getEndpoint(), configuration.getFactory());
-            }
+        // Register all the configurations that belong to the main endpoint in order to be able to unregister them later
+        retryEndpointsByMainEndpointId.put(mainEndpoint.getId(),
+                configurations.stream().map(Configuration::getEndpoint).map(KafkaListenerEndpoint::getId).collect(Collectors.toList()));
+        for (Configuration configuration : configurations) {
+            registerEndpoint(configuration.getEndpoint(), configuration.getFactory());
         }
 
     }
@@ -216,6 +212,13 @@ public class KafkaChannelDefinitionProcessor implements BeanFactoryAware, Applic
         RetryTopicConfiguration retryTopicConfiguration = createRetryTopicConfiguration(retryConfiguration);
 
         if (retryTopicConfiguration != null) {
+
+            Collection<String> topics = mainEndpoint.getTopics();
+            if (topics == null || topics.isEmpty()) {
+                throw new FlowableException("Channel model " + channelModel.getKey() + " in tenant " + tenantId
+                        + " has retry configuration but no topics have been provided for it");
+            }
+
             Collection<KafkaChannelDefinitionProcessor.Configuration> configurations = new ArrayList<>(
                     retryTopicConfiguration.getDestinationTopicProperties().size());
 
@@ -229,7 +232,7 @@ public class KafkaChannelDefinitionProcessor implements BeanFactoryAware, Applic
                 if (destinationTopicProperties.isMainEndpoint() || destinationTopicProperties.isDltTopic() || retryConfiguration.hasRetryTopic()) {
                     // We only need to register the retry topic if the retry topic suffix is configured
                     // Otherwise we are going to send to the retry topic instead of only sending to the dead letter
-                    for (String topic : mainEndpoint.getTopics()) {
+                    for (String topic : topics) {
                         String destinationTopic = suffixer.maybeAddTo(topic);
                         processor.registerDestinationTopic(topic, destinationTopic, destinationTopicProperties, context);
                     }
@@ -262,7 +265,7 @@ public class KafkaChannelDefinitionProcessor implements BeanFactoryAware, Applic
                 }
             }, context);
 
-            processor.processRegisteredDestinations(t -> {}, context);
+            processor.processRegisteredDestinations(getTopicCreationFunction(retryConfiguration), context);
 
             // We need to do this, because the topic resolver is only scoped to this registration,
             // and we need to make sure that destination topics are resolved in a non-synchronized blocks
@@ -275,6 +278,20 @@ public class KafkaChannelDefinitionProcessor implements BeanFactoryAware, Applic
         } else {
             return Collections.singleton(new Configuration(mainEndpoint, containerFactory));
         }
+    }
+
+    protected Consumer<Collection<String>> getTopicCreationFunction(ResolvedRetryConfiguration retryConfiguration) {
+        if (retryConfiguration.autoCreateTopics) {
+            if (kafkaAdminOperations == null) {
+                throw new FlowableException("It is not possible to auto create new topics when no kafka admin operations have been configured");
+            }
+            return topics -> createNewTopics(topics, retryConfiguration.numPartitions, retryConfiguration.replicationFactor);
+        }
+        return topics -> {};
+    }
+
+    protected void createNewTopics(Collection<String> topics, int numPartitions, short replicationFactor) {
+        kafkaAdminOperations.createOrModifyTopics(topics.stream().map(topic -> new NewTopic(topic, numPartitions, replicationFactor)).toArray(NewTopic[]::new));
     }
 
     protected ListenerContainerFactoryConfigurer createListenerContainerFactoryConfigurer(ResolvedRetryConfiguration retryConfiguration, BackOff backOff,
@@ -315,6 +332,7 @@ public class KafkaChannelDefinitionProcessor implements BeanFactoryAware, Applic
 
     protected KafkaListenerContainerFactory<?> decorateFactory(DestinationTopic.Properties destinationTopicProperties,
             ListenerContainerFactoryConfigurer factoryConfigurer, RetryTopicConfiguration retryTopicConfiguration) {
+        // This is the same as it is done in the Spring Kata RetryTopicConfigurer
         return destinationTopicProperties.isMainEndpoint() ?
                 factoryConfigurer.decorateFactoryWithoutSettingContainerProperties((ConcurrentKafkaListenerContainerFactory<?, ?>) containerFactory,
                         retryTopicConfiguration.forContainerFactoryConfigurer()) :
@@ -332,8 +350,12 @@ public class KafkaChannelDefinitionProcessor implements BeanFactoryAware, Applic
     }
 
     protected Integer resolveExpressionAsInteger(String value, String attribute) {
+        return resolveExpressionAsInteger(value, attribute, null);
+    }
+
+    protected Integer resolveExpressionAsInteger(String value, String attribute, Integer defaultValue) {
         Object resolved = resolveExpression(value);
-        Integer result = null;
+        Integer result = defaultValue;
         if (resolved instanceof String) {
             result = Integer.parseInt((String) resolved);
         } else if (resolved instanceof Number) {
@@ -377,8 +399,12 @@ public class KafkaChannelDefinitionProcessor implements BeanFactoryAware, Applic
     }
 
     protected Boolean resolveExpressionAsBoolean(String value, String attribute) {
+        return resolveExpressionAsBoolean(value, attribute, null);
+    }
+
+    protected Boolean resolveExpressionAsBoolean(String value, String attribute, Boolean defaultValue) {
         Object resolved = resolveExpression(value);
-        Boolean result = null;
+        Boolean result = defaultValue;
         if (resolved instanceof String) {
             result = Boolean.parseBoolean((String) resolved);
         } else if (resolved instanceof Boolean) {
@@ -619,6 +645,14 @@ public class KafkaChannelDefinitionProcessor implements BeanFactoryAware, Applic
         this.kafkaOperations = kafkaOperations;
     }
 
+    public KafkaAdminOperations getKafkaAdminOperations() {
+        return kafkaAdminOperations;
+    }
+
+    public void setKafkaAdminOperations(KafkaAdminOperations kafkaAdminOperations) {
+        this.kafkaAdminOperations = kafkaAdminOperations;
+    }
+
     public KafkaListenerEndpointRegistry getEndpointRegistry() {
         return endpointRegistry;
     }
@@ -718,7 +752,7 @@ public class KafkaChannelDefinitionProcessor implements BeanFactoryAware, Applic
 
         RetryTopicConfigurationBuilder retryTopicConfigurationBuilder = RetryTopicConfigurationBuilder.newInstance()
                 .autoStartDltHandler(false)
-                .doNotAutoCreateRetryTopics()
+                .autoCreateTopics(retryConfiguration.autoCreateTopics, retryConfiguration.numPartitions, retryConfiguration.replicationFactor)
                 .dltSuffix(dltTopicSuffix)
                 .retryTopicSuffix(retryTopicSuffix)
                 .useSingleTopicForFixedDelays(retryConfiguration.fixedDelayTopicStrategy)
@@ -757,16 +791,21 @@ public class KafkaChannelDefinitionProcessor implements BeanFactoryAware, Applic
         resolvedRetryConfiguration.retryTopicSuffix = resolveExpressionAsString(retry.getRetryTopicSuffix(), "retry.retryTopicSuffix");
 
         String fixedDelayTopicStrategy = resolveExpressionAsString(retry.getFixedDelayTopicStrategy(), "retry.fixedDelayTopicStrategy");
-        // Same default as Spring Kafka
+        // Different default from Spring Kafka
         resolvedRetryConfiguration.fixedDelayTopicStrategy =
-                fixedDelayTopicStrategy == null ? FixedDelayStrategy.MULTIPLE_TOPICS : FixedDelayStrategy.valueOf(fixedDelayTopicStrategy);
+                fixedDelayTopicStrategy == null ? FixedDelayStrategy.SINGLE_TOPIC : FixedDelayStrategy.valueOf(fixedDelayTopicStrategy);
 
         String topicSuffixingStrategy = resolveExpressionAsString(retry.getTopicSuffixingStrategy(), "retry.topicSuffixingStrategy");
-        // Different default to Spring Kafka
+        // Different default from Spring Kafka
         resolvedRetryConfiguration.topicSuffixingStrategy =
                 topicSuffixingStrategy == null ? TopicSuffixingStrategy.SUFFIX_WITH_INDEX_VALUE : TopicSuffixingStrategy.valueOf(topicSuffixingStrategy);
 
         resolvedRetryConfiguration.nonBlockingBackOff = createNonBlockingBackOffPolicy(retry.getNonBlockingBackOff());
+
+        // Same defaults as in Spring Kafka
+        resolvedRetryConfiguration.autoCreateTopics = resolveExpressionAsBoolean(retry.getAutoCreateTopics(), "retry.autoCreateTopics", true);
+        resolvedRetryConfiguration.numPartitions = resolveExpressionAsInteger(retry.getNumPartitions(), "retry.numPartitions", 1);
+        resolvedRetryConfiguration.replicationFactor = resolveExpressionAsInteger(retry.getReplicationFactor(), "retry.replicationFactor", 1).shortValue();
 
         return resolvedRetryConfiguration;
     }
@@ -807,6 +846,7 @@ public class KafkaChannelDefinitionProcessor implements BeanFactoryAware, Applic
             UniformRandomBackOffPolicy policy = new UniformRandomBackOffPolicy();
             policy.setMinBackOffPeriod(min);
             policy.setMaxBackOffPeriod(max);
+            return policy;
         }
 
         FixedBackOffPolicy policy = new FixedBackOffPolicy();
@@ -825,6 +865,9 @@ public class KafkaChannelDefinitionProcessor implements BeanFactoryAware, Applic
         protected FixedDelayStrategy fixedDelayTopicStrategy;
         protected TopicSuffixingStrategy topicSuffixingStrategy;
         protected SleepingBackOffPolicy<?> nonBlockingBackOff;
+        protected boolean autoCreateTopics;
+        protected int numPartitions;
+        protected short replicationFactor;
 
         protected boolean hasRetryTopic() {
             return retryTopicSuffix != null;

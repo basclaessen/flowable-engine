@@ -138,6 +138,9 @@ public class KafkaInboundChannelModel extends InboundChannelModel {
         protected String topicSuffixingStrategy;
         protected NonBlockingRetryBackOff nonBlockingBackOff;
 
+        protected String autoCreateTopics;
+        protected String numPartitions;
+        protected String replicationFactor;
 
         public String getAttempts() {
             return attempts;
@@ -185,6 +188,30 @@ public class KafkaInboundChannelModel extends InboundChannelModel {
 
         public void setNonBlockingBackOff(NonBlockingRetryBackOff nonBlockingBackOff) {
             this.nonBlockingBackOff = nonBlockingBackOff;
+        }
+
+        public String getAutoCreateTopics() {
+            return autoCreateTopics;
+        }
+
+        public void setAutoCreateTopics(String autoCreateTopics) {
+            this.autoCreateTopics = autoCreateTopics;
+        }
+
+        public String getNumPartitions() {
+            return numPartitions;
+        }
+
+        public void setNumPartitions(String numPartitions) {
+            this.numPartitions = numPartitions;
+        }
+
+        public String getReplicationFactor() {
+            return replicationFactor;
+        }
+
+        public void setReplicationFactor(String replicationFactor) {
+            this.replicationFactor = replicationFactor;
         }
     }
 
